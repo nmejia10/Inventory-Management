@@ -192,6 +192,70 @@ def increase_stock(conn: Connection, product_id: int, quantity: int, notes: str)
     )
 
 
+def update_product(
+    conn: Connection,
+    product_id: int,
+    name: str,
+    brand: str,
+    quantity: int,
+    notes: str,
+) -> tuple[bool, str]:
+    current_row = conn.execute(
+        text("SELECT quantity FROM products WHERE id = :product_id;"),
+        {"product_id": product_id},
+    ).mappings().fetchone()
+
+    if current_row is None:
+        return False, "El producto seleccionado no existe."
+
+    previous_quantity = int(current_row["quantity"])
+    now = datetime.utcnow().isoformat(timespec="seconds")
+
+    conn.execute(
+        text(
+            """
+        UPDATE products
+        SET name = :name,
+            brand = :brand,
+            quantity = :quantity,
+            notes = :notes,
+            updated_at = :updated_at
+        WHERE id = :product_id;
+        """
+        ),
+        {
+            "name": name,
+            "brand": brand,
+            "quantity": quantity,
+            "notes": notes,
+            "updated_at": now,
+            "product_id": product_id,
+        },
+    )
+
+    quantity_delta = quantity - previous_quantity
+    if quantity_delta != 0:
+        movement_type = "IN" if quantity_delta > 0 else "OUT"
+        adjustment_notes = f"Ajuste manual por correccion de registro. {notes}".strip()
+        conn.execute(
+            text(
+                """
+            INSERT INTO movements (product_id, movement_type, quantity, notes, timestamp)
+            VALUES (:product_id, :movement_type, :quantity, :notes, :timestamp);
+            """
+            ),
+            {
+                "product_id": product_id,
+                "movement_type": movement_type,
+                "quantity": abs(quantity_delta),
+                "notes": adjustment_notes,
+                "timestamp": now,
+            },
+        )
+
+    return True, "Producto actualizado correctamente."
+
+
 def withdraw_stock(
     conn: Connection, product_id: int, quantity: int, notes: str
 ) -> tuple[bool, str]:
@@ -236,6 +300,25 @@ def withdraw_stock(
         },
     )
     return True, "Salida de inventario registrada correctamente."
+
+
+def delete_product(conn: Connection, product_id: int) -> tuple[bool, str]:
+    existing_row = conn.execute(
+        text("SELECT id FROM products WHERE id = :product_id;"),
+        {"product_id": product_id},
+    ).fetchone()
+    if existing_row is None:
+        return False, "El producto seleccionado no existe."
+
+    conn.execute(
+        text("DELETE FROM movements WHERE product_id = :product_id;"),
+        {"product_id": product_id},
+    )
+    conn.execute(
+        text("DELETE FROM products WHERE id = :product_id;"),
+        {"product_id": product_id},
+    )
+    return True, "Producto eliminado correctamente."
 
 
 def fetch_products(conn: Connection) -> pd.DataFrame:
@@ -559,7 +642,13 @@ def main() -> None:
         st.markdown("### Navegacion")
         page = st.radio(
             "Ir a",
-            ["Panel", "Entrada de Inventario", "Salida de Inventario", "Historial"],
+            [
+                "Panel",
+                "Entrada de Inventario",
+                "Salida de Inventario",
+                "Editar / Eliminar",
+                "Historial",
+            ],
             label_visibility="collapsed",
         )
         st.markdown("---")
@@ -711,6 +800,92 @@ def main() -> None:
                     else:
                         st.error(message)
         close_section()
+
+    elif page == "Editar / Eliminar":
+        left, right = st.columns(2, gap="large")
+
+        with left:
+            section_heading(
+                "Modificar Producto",
+                "Corrige nombre, marca, cantidad o notas de un registro existente.",
+            )
+            if products_df.empty:
+                st.info("No hay productos disponibles para modificar.")
+            else:
+                options = build_product_options(products_df, "Actual")
+                with st.form("edit_product_form"):
+                    selected_label = st.selectbox("Seleccionar Producto", list(options.keys()), key="edit_product")
+                    selected_id = options[selected_label]
+                    selected_row = products_df.loc[products_df["id"] == selected_id].iloc[0]
+
+                    edit_name = st.text_input("Nombre del Producto", value=str(selected_row["name"]))
+                    edit_brand = st.text_input("Marca", value=str(selected_row["brand"]))
+                    edit_quantity = st.number_input(
+                        "Cantidad Corregida",
+                        min_value=0,
+                        step=1,
+                        value=int(selected_row["quantity"]),
+                    )
+                    edit_notes = st.text_area(
+                        "Notas",
+                        value=str(selected_row["notes"] or ""),
+                        max_chars=500,
+                        placeholder="Motivo de la correccion...",
+                    )
+                    submit_edit = st.form_submit_button("Guardar Cambios")
+
+                    if submit_edit:
+                        clean_name = normalize_text(edit_name)
+                        clean_brand = normalize_text(edit_brand)
+                        clean_notes = normalize_text(edit_notes)
+                        if not clean_name or not clean_brand:
+                            st.error("El nombre del producto y la marca son obligatorios.")
+                        else:
+                            try:
+                                with engine.begin() as conn:
+                                    ok, message = update_product(
+                                        conn,
+                                        selected_id,
+                                        clean_name,
+                                        clean_brand,
+                                        int(edit_quantity),
+                                        clean_notes,
+                                    )
+                                if ok:
+                                    st.success(message)
+                                    st.rerun()
+                                else:
+                                    st.error(message)
+                            except IntegrityError:
+                                st.error("Ya existe otro producto con esa misma combinacion de nombre y marca.")
+            close_section()
+
+        with right:
+            section_heading(
+                "Eliminar Producto",
+                "Borra el producto y su historial de movimientos. Usalo solo si fue creado por error.",
+            )
+            if products_df.empty:
+                st.info("No hay productos disponibles para eliminar.")
+            else:
+                options = build_product_options(products_df, "Actual")
+                with st.form("delete_product_form"):
+                    selected_label = st.selectbox("Producto a Eliminar", list(options.keys()), key="delete_product")
+                    confirm_delete = st.checkbox("Confirmo que deseo eliminar este producto y su historial.")
+                    submit_delete = st.form_submit_button("Eliminar Producto")
+
+                    if submit_delete:
+                        if not confirm_delete:
+                            st.error("Debes confirmar la eliminacion antes de continuar.")
+                        else:
+                            with engine.begin() as conn:
+                                ok, message = delete_product(conn, options[selected_label])
+                            if ok:
+                                st.success(message)
+                                st.rerun()
+                            else:
+                                st.error(message)
+            close_section()
 
     elif page == "Historial":
         section_heading("Movimientos de Inventario", "Trazabilidad completa de entradas y salidas.")
