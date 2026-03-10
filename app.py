@@ -12,6 +12,8 @@ import tomllib
 
 
 LOW_STOCK_DEFAULT = 10
+PRODUCT_STATES = ("Nuevo", "Usado")
+CATEGORIES = ("Materiales", "Equipos", "Electrico")
 NEON_DB_URL_PLACEHOLDER = (
     "postgresql+psycopg2://[TU_USUARIO]:[TU_PASSWORD]"
     "@[TU_HOST_NEON]/[TU_DATABASE]?sslmode=require"
@@ -96,6 +98,8 @@ def init_db(conn: Connection) -> None:
             id BIGSERIAL PRIMARY KEY,
             name TEXT NOT NULL,
             brand TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'Nuevo',
+            category TEXT NOT NULL DEFAULT 'Materiales',
             quantity INTEGER NOT NULL CHECK(quantity >= 0),
             notes TEXT,
             created_at TEXT NOT NULL,
@@ -120,24 +124,42 @@ def init_db(conn: Connection) -> None:
         """
         )
     )
+    conn.execute(
+        text("ALTER TABLE products ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'Nuevo';")
+    )
+    conn.execute(
+        text(
+            "ALTER TABLE products ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'Materiales';"
+        )
+    )
 
 
 def normalize_text(value: str) -> str:
     return " ".join(value.strip().split())
 
 
-def add_new_product(conn: Connection, name: str, brand: str, quantity: int, notes: str) -> None:
+def add_new_product(
+    conn: Connection,
+    name: str,
+    brand: str,
+    status: str,
+    category: str,
+    quantity: int,
+    notes: str,
+) -> None:
     now = datetime.now().isoformat(timespec="seconds")
     conn.execute(
         text(
             """
-        INSERT INTO products (name, brand, quantity, notes, created_at, updated_at)
-        VALUES (:name, :brand, :quantity, :notes, :created_at, :updated_at);
+        INSERT INTO products (name, brand, status, category, quantity, notes, created_at, updated_at)
+        VALUES (:name, :brand, :status, :category, :quantity, :notes, :created_at, :updated_at);
         """
         ),
         {
             "name": name,
             "brand": brand,
+            "status": status,
+            "category": category,
             "quantity": quantity,
             "notes": notes,
             "created_at": now,
@@ -197,6 +219,8 @@ def update_product(
     product_id: int,
     name: str,
     brand: str,
+    status: str,
+    category: str,
     quantity: int,
     notes: str,
 ) -> tuple[bool, str]:
@@ -217,6 +241,8 @@ def update_product(
         UPDATE products
         SET name = :name,
             brand = :brand,
+            status = :status,
+            category = :category,
             quantity = :quantity,
             notes = :notes,
             updated_at = :updated_at
@@ -226,6 +252,8 @@ def update_product(
         {
             "name": name,
             "brand": brand,
+            "status": status,
+            "category": category,
             "quantity": quantity,
             "notes": notes,
             "updated_at": now,
@@ -325,7 +353,7 @@ def fetch_products(conn: Connection) -> pd.DataFrame:
     return pd.read_sql_query(
         text(
             """
-        SELECT id, name, brand, quantity, notes, updated_at
+        SELECT id, name, brand, status, category, quantity, notes, updated_at
         FROM products
         ORDER BY name ASC, brand ASC;
         """
@@ -673,6 +701,8 @@ def main() -> None:
                     columns={
                         "name": "Producto",
                         "brand": "Marca",
+                        "status": "Estado",
+                        "category": "Categoria",
                         "quantity": "Cantidad",
                         "notes": "Notas",
                         "updated_at": "Ultima Actualizacion",
@@ -692,8 +722,14 @@ def main() -> None:
                 else:
                     st.warning(f"{len(low_df)} producto(s) por debajo del umbral.")
                     st.dataframe(
-                        low_df[["name", "brand", "quantity"]].rename(
-                            columns={"name": "Producto", "brand": "Marca", "quantity": "Cant."}
+                        low_df[["name", "brand", "status", "category", "quantity"]].rename(
+                            columns={
+                                "name": "Producto",
+                                "brand": "Marca",
+                                "status": "Estado",
+                                "category": "Categoria",
+                                "quantity": "Cant.",
+                            }
                         ),
                         use_container_width=True,
                         hide_index=True,
@@ -708,6 +744,8 @@ def main() -> None:
             with st.form("new_product_form", clear_on_submit=True):
                 name = st.text_input("Nombre del Producto", max_chars=120, placeholder="Ejemplo: Cemento")
                 brand = st.text_input("Marca", max_chars=120, placeholder="Ejemplo: Cemex")
+                status = st.selectbox("Estado", PRODUCT_STATES, index=0)
+                category = st.selectbox("Categoria", CATEGORIES, index=0)
                 quantity = st.number_input("Cantidad Inicial", min_value=1, step=1)
                 notes = st.text_area("Notas Adicionales", max_chars=500, placeholder="Detalles opcionales.")
                 submitted = st.form_submit_button("Crear Producto")
@@ -725,6 +763,8 @@ def main() -> None:
                                     conn,
                                     clean_name,
                                     clean_brand,
+                                    status,
+                                    category,
                                     int(quantity),
                                     clean_notes,
                                 )
@@ -820,6 +860,20 @@ def main() -> None:
 
                     edit_name = st.text_input("Nombre del Producto", value=str(selected_row["name"]))
                     edit_brand = st.text_input("Marca", value=str(selected_row["brand"]))
+                    edit_status = st.selectbox(
+                        "Estado",
+                        PRODUCT_STATES,
+                        index=PRODUCT_STATES.index(selected_row["status"])
+                        if selected_row["status"] in PRODUCT_STATES
+                        else 0,
+                    )
+                    edit_category = st.selectbox(
+                        "Categoria",
+                        CATEGORIES,
+                        index=CATEGORIES.index(selected_row["category"])
+                        if selected_row["category"] in CATEGORIES
+                        else 0,
+                    )
                     edit_quantity = st.number_input(
                         "Cantidad Corregida",
                         min_value=0,
@@ -848,6 +902,8 @@ def main() -> None:
                                         selected_id,
                                         clean_name,
                                         clean_brand,
+                                        edit_status,
+                                        edit_category,
                                         int(edit_quantity),
                                         clean_notes,
                                     )
