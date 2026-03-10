@@ -727,6 +727,35 @@ def render_metrics(products_df: pd.DataFrame, movements_df: pd.DataFrame, low_st
     c4.metric("Movimientos (24h)", f"{recent_moves}")
 
 
+def filter_products(
+    products_df: pd.DataFrame,
+    search_text: str,
+    selected_brands: list[str],
+    selected_categories: list[str],
+    selected_statuses: list[str],
+) -> pd.DataFrame:
+    filtered_df = products_df.copy()
+
+    if search_text:
+        normalized_search = search_text.strip().lower()
+        searchable_columns = ["name", "brand", "category", "status", "notes"]
+        mask = filtered_df[searchable_columns].fillna("").astype(str).apply(
+            lambda column: column.str.lower().str.contains(normalized_search, regex=False)
+        ).any(axis=1)
+        filtered_df = filtered_df[mask]
+
+    if selected_brands:
+        filtered_df = filtered_df[filtered_df["brand"].isin(selected_brands)]
+
+    if selected_categories:
+        filtered_df = filtered_df[filtered_df["category"].isin(selected_categories)]
+
+    if selected_statuses:
+        filtered_df = filtered_df[filtered_df["status"].isin(selected_statuses)]
+
+    return filtered_df
+
+
 def section_heading(title: str, caption: str) -> None:
     st.markdown(
         f"""
@@ -793,13 +822,49 @@ def main() -> None:
         render_hero()
         render_metrics(products_df, movements_df, low_stock_limit)
         st.write("")
+
+        section_heading("Filtros", "Busca por cualquier valor o filtra por marca, categoria y estado.")
+        filter_col_1, filter_col_2, filter_col_3, filter_col_4 = st.columns(4)
+        with filter_col_1:
+            search_text = st.text_input(
+                "Buscar",
+                placeholder="Producto, marca, categoria, estado o nota...",
+            )
+        with filter_col_2:
+            selected_brands = st.multiselect(
+                "Marca",
+                options=sorted(products_df["brand"].dropna().unique().tolist()) if not products_df.empty else [],
+            )
+        with filter_col_3:
+            selected_categories = st.multiselect(
+                "Categoria",
+                options=sorted(products_df["category"].dropna().unique().tolist()) if not products_df.empty else [],
+            )
+        with filter_col_4:
+            selected_statuses = st.multiselect(
+                "Estado",
+                options=sorted(products_df["status"].dropna().unique().tolist()) if not products_df.empty else [],
+            )
+        close_section()
+
+        filtered_products_df = filter_products(
+            products_df,
+            search_text,
+            selected_brands,
+            selected_categories,
+            selected_statuses,
+        )
+
         c1, c2 = st.columns([1.4, 1], gap="large")
         with c1:
             section_heading("Inventario Actual", "Cantidades en tiempo real por producto y marca.")
-            if products_df.empty:
-                st.info("El inventario esta vacio.")
+            if filtered_products_df.empty:
+                if products_df.empty:
+                    st.info("El inventario esta vacio.")
+                else:
+                    st.info("No hay productos que coincidan con los filtros aplicados.")
             else:
-                display_df = products_df.drop(columns=["id"]).rename(
+                display_df = filtered_products_df.drop(columns=["id"]).rename(
                     columns={
                         "name": "Producto",
                         "brand": "Marca",
@@ -815,10 +880,13 @@ def main() -> None:
 
         with c2:
             section_heading("Alerta de Pocas Existencias", "Panel de alerta rapida para control estricto.")
-            if products_df.empty:
-                st.info("No hay productos para analizar.")
+            if filtered_products_df.empty:
+                if products_df.empty:
+                    st.info("No hay productos para analizar.")
+                else:
+                    st.info("No hay productos que coincidan con los filtros aplicados.")
             else:
-                low_df = products_df[products_df["quantity"] <= low_stock_limit].copy()
+                low_df = filtered_products_df[filtered_products_df["quantity"] <= low_stock_limit].copy()
                 if low_df.empty:
                     st.success("No hay productos con bajo stock en este momento.")
                 else:
