@@ -820,40 +820,61 @@ def main() -> None:
 
     if page == "Panel":
         render_hero()
-        render_metrics(products_df, movements_df, low_stock_limit)
-        st.write("")
-
         section_heading("Filtros", "Busca por cualquier valor o filtra por marca, categoria y estado.")
-        filter_col_1, filter_col_2, filter_col_3, filter_col_4 = st.columns(4)
+        if "panel_search_text" not in st.session_state:
+            st.session_state.panel_search_text = ""
+        if "panel_selected_brands" not in st.session_state:
+            st.session_state.panel_selected_brands = []
+        if "panel_selected_categories" not in st.session_state:
+            st.session_state.panel_selected_categories = []
+        if "panel_selected_statuses" not in st.session_state:
+            st.session_state.panel_selected_statuses = []
+
+        filter_col_1, filter_col_2, filter_col_3, filter_col_4, filter_col_5 = st.columns(5)
         with filter_col_1:
-            search_text = st.text_input(
+            st.text_input(
                 "Buscar",
                 placeholder="Producto, marca, categoria, estado o nota...",
+                key="panel_search_text",
             )
         with filter_col_2:
-            selected_brands = st.multiselect(
+            st.multiselect(
                 "Marca",
                 options=sorted(products_df["brand"].dropna().unique().tolist()) if not products_df.empty else [],
+                key="panel_selected_brands",
             )
         with filter_col_3:
-            selected_categories = st.multiselect(
+            st.multiselect(
                 "Categoria",
                 options=sorted(products_df["category"].dropna().unique().tolist()) if not products_df.empty else [],
+                key="panel_selected_categories",
             )
         with filter_col_4:
-            selected_statuses = st.multiselect(
+            st.multiselect(
                 "Estado",
                 options=sorted(products_df["status"].dropna().unique().tolist()) if not products_df.empty else [],
+                key="panel_selected_statuses",
             )
+        with filter_col_5:
+            st.write("")
+            st.write("")
+            if st.button("Resetear Filtros", use_container_width=True):
+                st.session_state.panel_search_text = ""
+                st.session_state.panel_selected_brands = []
+                st.session_state.panel_selected_categories = []
+                st.session_state.panel_selected_statuses = []
+                st.rerun()
         close_section()
 
         filtered_products_df = filter_products(
             products_df,
-            search_text,
-            selected_brands,
-            selected_categories,
-            selected_statuses,
+            st.session_state.panel_search_text,
+            st.session_state.panel_selected_brands,
+            st.session_state.panel_selected_categories,
+            st.session_state.panel_selected_statuses,
         )
+        render_metrics(filtered_products_df, movements_df, low_stock_limit)
+        st.write("")
 
         c1, c2 = st.columns([1.4, 1], gap="large")
         with c1:
