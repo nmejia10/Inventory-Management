@@ -13,7 +13,7 @@ import tomllib
 
 LOW_STOCK_DEFAULT = 10
 PRODUCT_STATES = ("Nuevo", "Usado")
-CATEGORIES = ("Materiales", "Equipos", "Electrico")
+CATEGORIES = ("Material Obra Blanca", "Material Eléctrico" , "Material Hidráulico", "Herramienta de Mano", "Equipos", "Epps")
 NEON_DB_URL_PLACEHOLDER = (
     "postgresql+psycopg2://[TU_USUARIO]:[TU_PASSWORD]"
     "@[TU_HOST_NEON]/[TU_DATABASE]?sslmode=require"
