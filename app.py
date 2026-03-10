@@ -709,8 +709,9 @@ def render_hero() -> None:
 def render_metrics(products_df: pd.DataFrame, movements_df: pd.DataFrame, low_stock_limit: int) -> None:
     total_skus = int(len(products_df))
     total_units = int(products_df["quantity"].sum()) if not products_df.empty else 0
+    df_low_stock = products_df.query("category != 'Herramienta de Mano'")
     low_stock_items = (
-        int((products_df["quantity"] <= low_stock_limit).sum()) if not products_df.empty else 0
+        int((df_low_stock["quantity"] <= low_stock_limit).sum()) if not df_low_stock.empty else 0
     )
 
     recent_cutoff = datetime.now() - timedelta(hours=24)
