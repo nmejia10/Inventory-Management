@@ -908,7 +908,8 @@ def main() -> None:
                 else:
                     st.info("No hay productos que coincidan con los filtros aplicados.")
             else:
-                low_df = filtered_products_df[filtered_products_df["quantity"] <= low_stock_limit].copy()
+                df_low_stock = filtered_products_df.query("category != 'Herramienta de Mano'")
+                low_df = df_low_stock[df_low_stock["quantity"] <= low_stock_limit].copy()
                 if low_df.empty:
                     st.success("No hay productos con bajo stock en este momento.")
                 else:
