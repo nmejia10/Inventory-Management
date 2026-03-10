@@ -127,7 +127,7 @@ def normalize_text(value: str) -> str:
 
 
 def add_new_product(conn: Connection, name: str, brand: str, quantity: int, notes: str) -> None:
-    now = datetime.utcnow().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
     conn.execute(
         text(
             """
@@ -165,7 +165,7 @@ def add_new_product(conn: Connection, name: str, brand: str, quantity: int, note
 
 
 def increase_stock(conn: Connection, product_id: int, quantity: int, notes: str) -> None:
-    now = datetime.utcnow().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
     conn.execute(
         text(
             """
@@ -210,7 +210,7 @@ def withdraw_stock(
             f"{row['name']} ({row['brand']}).",
         )
 
-    now = datetime.utcnow().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
     conn.execute(
         text(
             """
@@ -500,7 +500,7 @@ def render_metrics(products_df: pd.DataFrame, movements_df: pd.DataFrame, low_st
         int((products_df["quantity"] <= low_stock_limit).sum()) if not products_df.empty else 0
     )
 
-    recent_cutoff = datetime.utcnow() - timedelta(hours=24)
+    recent_cutoff = datetime.now() - timedelta(hours=24)
     recent_moves = 0
     if not movements_df.empty:
         moves = movements_df.copy()
@@ -586,7 +586,7 @@ def main() -> None:
                         "brand": "Marca",
                         "quantity": "Cantidad",
                         "notes": "Notas",
-                        "updated_at": "Ultima Actualizacion (UTC)",
+                        "updated_at": "Ultima Actualizacion",
                     }
                 )
                 st.dataframe(display_df, use_container_width=True, hide_index=True)
@@ -724,7 +724,7 @@ def main() -> None:
                     "movement_type": "Tipo",
                     "quantity": "Cantidad",
                     "notes": "Notas",
-                    "timestamp": "Fecha y Hora (UTC)",
+                    "timestamp": "Fecha y Hora",
                 }
             )
             log_df["Tipo"] = log_df["Tipo"].map({"IN": "Entrada", "OUT": "Salida"}).fillna(log_df["Tipo"])
