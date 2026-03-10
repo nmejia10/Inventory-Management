@@ -1,4 +1,5 @@
-import os
+﻿import os
+from io import BytesIO
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -14,6 +15,14 @@ import tomllib
 LOW_STOCK_DEFAULT = 10
 PRODUCT_STATES = ("Nuevo", "Usado")
 CATEGORIES = ("Material Obra Blanca", "Material Eléctrico" , "Material Hidráulico", "Herramienta de Mano", "Equipos", "Epps")
+IMPORT_COLUMNS = (
+    "Nombre del Producto",
+    "Marca",
+    "Estado",
+    "Categoria",
+    "Cantidad Inicial",
+    "Notas Adicionales",
+)
 NEON_DB_URL_PLACEHOLDER = (
     "postgresql+psycopg2://[TU_USUARIO]:[TU_PASSWORD]"
     "@[TU_HOST_NEON]/[TU_DATABASE]?sslmode=require"
@@ -347,6 +356,99 @@ def delete_product(conn: Connection, product_id: int) -> tuple[bool, str]:
         {"product_id": product_id},
     )
     return True, "Producto eliminado correctamente."
+
+
+def build_import_template() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "Nombre del Producto": "Cemento Gris",
+                "Marca": "Cemex",
+                "Estado": "Nuevo",
+                "Categoria": "Materiales",
+                "Cantidad Inicial": 25,
+                "Notas Adicionales": "Lote marzo",
+            },
+            {
+                "Nombre del Producto": "Taladro",
+                "Marca": "Bosch",
+                "Estado": "Usado",
+                "Categoria": "Equipos",
+                "Cantidad Inicial": 2,
+                "Notas Adicionales": "Equipo revisado",
+            },
+        ]
+    )
+
+
+def build_import_template_file() -> bytes:
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        build_import_template().to_excel(writer, index=False, sheet_name="Productos")
+    return buffer.getvalue()
+
+
+def validate_import_dataframe(import_df: pd.DataFrame) -> tuple[bool, str]:
+    missing_columns = [column for column in IMPORT_COLUMNS if column not in import_df.columns]
+    if missing_columns:
+        return False, "Faltan columnas requeridas: " + ", ".join(missing_columns)
+    return True, ""
+
+
+def import_products_from_dataframe(conn: Connection, import_df: pd.DataFrame) -> tuple[int, list[str]]:
+    imported_count = 0
+    errors: list[str] = []
+
+    for row_number, row in import_df.iterrows():
+        excel_row_number = row_number + 2
+        name = normalize_text(str(row.get("Nombre del Producto", "")))
+        brand = normalize_text(str(row.get("Marca", "")))
+        status = normalize_text(str(row.get("Estado", ""))) or "Nuevo"
+        category = normalize_text(str(row.get("Categoria", ""))) or "Materiales"
+        notes_value = row.get("Notas Adicionales", "")
+        notes = normalize_text("" if pd.isna(notes_value) else str(notes_value))
+        quantity_value = row.get("Cantidad Inicial")
+
+        if not name or not brand:
+            errors.append(f"Fila {excel_row_number}: nombre y marca son obligatorios.")
+            continue
+
+        if status not in PRODUCT_STATES:
+            errors.append(
+                f"Fila {excel_row_number}: Estado debe ser uno de {', '.join(PRODUCT_STATES)}."
+            )
+            continue
+
+        if category not in CATEGORIES:
+            errors.append(
+                f"Fila {excel_row_number}: Categoria debe ser una de {', '.join(CATEGORIES)}."
+            )
+            continue
+
+        try:
+            quantity = int(quantity_value)
+        except (TypeError, ValueError):
+            errors.append(f"Fila {excel_row_number}: Cantidad Inicial debe ser un numero entero.")
+            continue
+
+        if quantity <= 0:
+            errors.append(f"Fila {excel_row_number}: Cantidad Inicial debe ser mayor que cero.")
+            continue
+
+        existing_product = conn.execute(
+            text("SELECT id FROM products WHERE name = :name AND brand = :brand;"),
+            {"name": name, "brand": brand},
+        ).fetchone()
+        if existing_product is not None:
+            errors.append(
+                f"Fila {excel_row_number}: el producto {name} ({brand}) ya existe en la base de datos."
+            )
+            continue
+
+        add_new_product(conn, name, brand, status, category, quantity, notes)
+        imported_count += 1
+
+    return imported_count, errors
 
 
 def fetch_products(conn: Connection) -> pd.DataFrame:
@@ -804,6 +906,57 @@ def main() -> None:
                         st.rerun()
             close_section()
 
+        section_heading(
+            "Carga Masiva desde Excel",
+            "Importa multiples productos con una plantilla fija y validacion por fila.",
+        )
+        st.markdown(
+            "Columnas requeridas: "
+            + ", ".join(f"`{column}`" for column in IMPORT_COLUMNS)
+        )
+        st.download_button(
+            "Descargar Plantilla Excel",
+            data=build_import_template_file(),
+            file_name="plantilla_importacion_productos.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+        uploaded_file = st.file_uploader(
+            "Subir archivo Excel (.xlsx)",
+            type=["xlsx"],
+            key="inventory_batch_upload",
+        )
+
+        if uploaded_file is not None:
+            try:
+                import_df = pd.read_excel(uploaded_file)
+            except Exception as exc:
+                st.error(f"No se pudo leer el archivo Excel: {exc}")
+            else:
+                is_valid, validation_message = validate_import_dataframe(import_df)
+                if not is_valid:
+                    st.error(validation_message)
+                else:
+                    st.dataframe(import_df, use_container_width=True, hide_index=True)
+                    if st.button("Importar Productos", key="import_products_button"):
+                        with engine.begin() as conn:
+                            imported_count, import_errors = import_products_from_dataframe(
+                                conn,
+                                import_df,
+                            )
+
+                        if imported_count > 0:
+                            st.success(f"Se importaron {imported_count} producto(s) correctamente.")
+
+                        if import_errors:
+                            st.warning("Algunas filas no pudieron importarse.")
+                            for error in import_errors:
+                                st.write(f"- {error}")
+
+                        if imported_count > 0:
+                            st.rerun()
+        close_section()
+
     elif page == "Salida de Inventario":
         section_heading(
             "Retirar Productos",
@@ -964,4 +1117,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
