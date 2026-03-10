@@ -1,26 +1,99 @@
-import sqlite3
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.exc import IntegrityError
+from streamlit.errors import StreamlitSecretNotFoundError
+import tomllib
 
 
-DB_PATH = Path("inventory.db")
-LOW_STOCK_DEFAULT = 5
+LOW_STOCK_DEFAULT = 10
+NEON_DB_URL_PLACEHOLDER = (
+    "postgresql+psycopg2://[TU_USUARIO]:[TU_PASSWORD]"
+    "@[TU_HOST_NEON]/[TU_DATABASE]?sslmode=require"
+)
+LOCAL_SECRETS_EXAMPLE = Path(".streamlit/secrets.toml.example")
 
 
-def get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+def get_database_url() -> str:
+    try:
+        secret_url = st.secrets.get("NEON_DB_URL", "").strip()
+        if secret_url:
+            return normalize_database_url(secret_url)
+    except StreamlitSecretNotFoundError:
+        pass
+
+    try:
+        legacy_secret_url = st.secrets.get("SUPABASE_DB_URL", "").strip()
+        if legacy_secret_url:
+            return normalize_database_url(legacy_secret_url)
+    except StreamlitSecretNotFoundError:
+        pass
+
+    env_url = os.getenv("NEON_DB_URL", "").strip()
+    if env_url:
+        return normalize_database_url(env_url)
+
+    legacy_env_url = os.getenv("SUPABASE_DB_URL", "").strip()
+    if legacy_env_url:
+        return normalize_database_url(legacy_env_url)
+
+    if LOCAL_SECRETS_EXAMPLE.exists():
+        local_secret_url = load_local_example_secret()
+        if local_secret_url:
+            return normalize_database_url(local_secret_url)
+
+    return normalize_database_url(NEON_DB_URL_PLACEHOLDER)
 
 
-def init_db(conn: sqlite3.Connection) -> None:
-    conn.execute(
+def normalize_database_url(database_url: str) -> str:
+    if database_url.startswith("postgresql+psycopg://"):
+        return database_url.replace("postgresql+psycopg://", "postgresql+psycopg2://", 1)
+    if database_url.startswith("postgresql://"):
+        return database_url.replace("postgresql://", "postgresql+psycopg2://", 1)
+    return database_url
+
+
+def load_local_example_secret() -> str:
+    try:
+        parsed = tomllib.loads(LOCAL_SECRETS_EXAMPLE.read_text())
+    except Exception:
+        return ""
+    return str(parsed.get("NEON_DB_URL") or parsed.get("SUPABASE_DB_URL") or "").strip()
+
+
+@st.cache_resource(show_spinner=False)
+def get_engine() -> Engine:
+    database_url = get_database_url()
+    if "[TU_PASSWORD]" in database_url or "[TU_HOST_NEON]" in database_url:
+        raise RuntimeError("Neon no esta configurado todavia.")
+
+    return create_engine(database_url, pool_pre_ping=True)
+
+
+def show_database_setup_error() -> None:
+    st.error("Falta configurar la conexion a Neon.")
+    st.code(
         """
+NEON_DB_URL = "postgresql+psycopg2://[TU_USUARIO]:[TU_PASSWORD]@[TU_HOST_NEON]/[TU_DATABASE]?sslmode=require"
+        """.strip(),
+        language="toml",
+    )
+    st.caption(
+        "Agrega ese valor en `.streamlit/secrets.toml` o como variable de entorno `NEON_DB_URL`."
+    )
+
+
+def init_db(conn: Connection) -> None:
+    conn.execute(
+        text(
+            """
         CREATE TABLE IF NOT EXISTS products (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id BIGSERIAL PRIMARY KEY,
             name TEXT NOT NULL,
             brand TEXT NOT NULL,
             quantity INTEGER NOT NULL CHECK(quantity >= 0),
@@ -30,12 +103,14 @@ def init_db(conn: sqlite3.Connection) -> None:
             UNIQUE(name, brand)
         );
         """
+        )
     )
     conn.execute(
-        """
+        text(
+            """
         CREATE TABLE IF NOT EXISTS movements (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            product_id INTEGER NOT NULL,
+            id BIGSERIAL PRIMARY KEY,
+            product_id BIGINT NOT NULL,
             movement_type TEXT NOT NULL CHECK(movement_type IN ('IN', 'OUT')),
             quantity INTEGER NOT NULL CHECK(quantity > 0),
             notes TEXT,
@@ -43,66 +118,87 @@ def init_db(conn: sqlite3.Connection) -> None:
             FOREIGN KEY(product_id) REFERENCES products(id)
         );
         """
+        )
     )
-    conn.commit()
 
 
 def normalize_text(value: str) -> str:
     return " ".join(value.strip().split())
 
 
-def add_new_product(
-    conn: sqlite3.Connection, name: str, brand: str, quantity: int, notes: str
-) -> None:
+def add_new_product(conn: Connection, name: str, brand: str, quantity: int, notes: str) -> None:
     now = datetime.utcnow().isoformat(timespec="seconds")
     conn.execute(
-        """
+        text(
+            """
         INSERT INTO products (name, brand, quantity, notes, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?);
-        """,
-        (name, brand, quantity, notes, now, now),
+        VALUES (:name, :brand, :quantity, :notes, :created_at, :updated_at);
+        """
+        ),
+        {
+            "name": name,
+            "brand": brand,
+            "quantity": quantity,
+            "notes": notes,
+            "created_at": now,
+            "updated_at": now,
+        },
     )
     product_id = conn.execute(
-        "SELECT id FROM products WHERE name = ? AND brand = ?;", (name, brand)
-    ).fetchone()["id"]
+        text("SELECT id FROM products WHERE name = :name AND brand = :brand;"),
+        {"name": name, "brand": brand},
+    ).scalar_one()
     conn.execute(
-        """
+        text(
+            """
         INSERT INTO movements (product_id, movement_type, quantity, notes, timestamp)
-        VALUES (?, 'IN', ?, ?, ?);
-        """,
-        (product_id, quantity, f"Existencias iniciales. {notes}".strip(), now),
+        VALUES (:product_id, 'IN', :quantity, :notes, :timestamp);
+        """
+        ),
+        {
+            "product_id": product_id,
+            "quantity": quantity,
+            "notes": f"Existencias iniciales. {notes}".strip(),
+            "timestamp": now,
+        },
     )
-    conn.commit()
 
 
-def increase_stock(
-    conn: sqlite3.Connection, product_id: int, quantity: int, notes: str
-) -> None:
+def increase_stock(conn: Connection, product_id: int, quantity: int, notes: str) -> None:
     now = datetime.utcnow().isoformat(timespec="seconds")
     conn.execute(
-        """
+        text(
+            """
         UPDATE products
-        SET quantity = quantity + ?, updated_at = ?
-        WHERE id = ?;
-        """,
-        (quantity, now, product_id),
+        SET quantity = quantity + :quantity, updated_at = :updated_at
+        WHERE id = :product_id;
+        """
+        ),
+        {"quantity": quantity, "updated_at": now, "product_id": product_id},
     )
     conn.execute(
-        """
+        text(
+            """
         INSERT INTO movements (product_id, movement_type, quantity, notes, timestamp)
-        VALUES (?, 'IN', ?, ?, ?);
-        """,
-        (product_id, quantity, notes, now),
+        VALUES (:product_id, 'IN', :quantity, :notes, :timestamp);
+        """
+        ),
+        {
+            "product_id": product_id,
+            "quantity": quantity,
+            "notes": notes,
+            "timestamp": now,
+        },
     )
-    conn.commit()
 
 
 def withdraw_stock(
-    conn: sqlite3.Connection, product_id: int, quantity: int, notes: str
+    conn: Connection, product_id: int, quantity: int, notes: str
 ) -> tuple[bool, str]:
     row = conn.execute(
-        "SELECT quantity, name, brand FROM products WHERE id = ?;", (product_id,)
-    ).fetchone()
+        text("SELECT quantity, name, brand FROM products WHERE id = :product_id;"),
+        {"product_id": product_id},
+    ).mappings().fetchone()
     if row is None:
         return False, "El producto seleccionado no existe."
 
@@ -116,43 +212,55 @@ def withdraw_stock(
 
     now = datetime.utcnow().isoformat(timespec="seconds")
     conn.execute(
-        """
+        text(
+            """
         UPDATE products
-        SET quantity = quantity - ?, updated_at = ?
-        WHERE id = ?;
-        """,
-        (quantity, now, product_id),
+        SET quantity = quantity - :quantity, updated_at = :updated_at
+        WHERE id = :product_id;
+        """
+        ),
+        {"quantity": quantity, "updated_at": now, "product_id": product_id},
     )
     conn.execute(
-        """
+        text(
+            """
         INSERT INTO movements (product_id, movement_type, quantity, notes, timestamp)
-        VALUES (?, 'OUT', ?, ?, ?);
-        """,
-        (product_id, quantity, notes, now),
+        VALUES (:product_id, 'OUT', :quantity, :notes, :timestamp);
+        """
+        ),
+        {
+            "product_id": product_id,
+            "quantity": quantity,
+            "notes": notes,
+            "timestamp": now,
+        },
     )
-    conn.commit()
     return True, "Salida de inventario registrada correctamente."
 
 
-def fetch_products(conn: sqlite3.Connection) -> pd.DataFrame:
+def fetch_products(conn: Connection) -> pd.DataFrame:
     return pd.read_sql_query(
-        """
+        text(
+            """
         SELECT id, name, brand, quantity, notes, updated_at
         FROM products
         ORDER BY name ASC, brand ASC;
-        """,
+        """
+        ),
         conn,
     )
 
 
-def fetch_movements(conn: sqlite3.Connection) -> pd.DataFrame:
+def fetch_movements(conn: Connection) -> pd.DataFrame:
     return pd.read_sql_query(
-        """
+        text(
+            """
         SELECT m.id, p.name, p.brand, m.movement_type, m.quantity, m.notes, m.timestamp
         FROM movements m
         JOIN products p ON p.id = m.product_id
         ORDER BY m.id DESC;
-        """,
+        """
+        ),
         conn,
     )
 
@@ -397,10 +505,27 @@ def main() -> None:
     st.set_page_config(page_title="Control de Inventario", page_icon=":package:", layout="wide")
     inject_styles()
 
-    conn = get_connection()
-    init_db(conn)
-    products_df = fetch_products(conn)
-    movements_df = fetch_movements(conn)
+    try:
+        engine = get_engine()
+    except RuntimeError:
+        show_database_setup_error()
+        return
+    except Exception as exc:
+        st.error("No se pudo inicializar la conexion con Neon.")
+        st.caption(str(exc))
+        return
+
+    try:
+        with engine.begin() as conn:
+            init_db(conn)
+
+        with engine.connect() as conn:
+            products_df = fetch_products(conn)
+            movements_df = fetch_movements(conn)
+    except Exception as exc:
+        st.error("No se pudo conectar con la base de datos de Neon.")
+        st.caption(str(exc))
+        return
 
     with st.sidebar:
         st.markdown("### Navegacion")
@@ -413,11 +538,14 @@ def main() -> None:
         low_stock_limit = st.slider("Umbral de bajo stock", 1, 50, LOW_STOCK_DEFAULT)
         st.caption("Los productos en o por debajo de esta cantidad se marcan como bajo stock.")
 
-    render_hero()
-    render_metrics(products_df, movements_df, low_stock_limit)
-    st.write("")
+    #render_hero()
+    #render_metrics(products_df, movements_df, low_stock_limit)
+    #st.write("")
 
     if page == "Panel":
+        render_hero()
+        render_metrics(products_df, movements_df, low_stock_limit)
+        st.write("")
         c1, c2 = st.columns([1.4, 1], gap="large")
         with c1:
             section_heading("Inventario Actual", "Cantidades en tiempo real por producto y marca.")
@@ -461,10 +589,10 @@ def main() -> None:
         with left:
             section_heading("Registrar Nuevo Producto", "Crea un producto con existencias iniciales y notas.")
             with st.form("new_product_form", clear_on_submit=True):
-                name = st.text_input("Nombre del Producto", max_chars=120, placeholder="Ejemplo: Cuchilla")
-                brand = st.text_input("Marca", max_chars=120, placeholder="Ejemplo: Stanley")
+                name = st.text_input("Nombre del Producto", max_chars=120, placeholder="Ejemplo: Cemento")
+                brand = st.text_input("Marca", max_chars=120, placeholder="Ejemplo: Cemex")
                 quantity = st.number_input("Cantidad Inicial", min_value=1, step=1)
-                notes = st.text_area("Notas Adicionales", max_chars=500, placeholder="Detalles opcionales...")
+                notes = st.text_area("Notas Adicionales", max_chars=500, placeholder="Detalles opcionales.")
                 submitted = st.form_submit_button("Crear Producto")
 
                 if submitted:
@@ -475,10 +603,17 @@ def main() -> None:
                         st.error("El nombre del producto y la marca son obligatorios.")
                     else:
                         try:
-                            add_new_product(conn, clean_name, clean_brand, int(quantity), clean_notes)
+                            with engine.begin() as conn:
+                                add_new_product(
+                                    conn,
+                                    clean_name,
+                                    clean_brand,
+                                    int(quantity),
+                                    clean_notes,
+                                )
                             st.success("Producto creado y existencias iniciales registradas.")
                             st.rerun()
-                        except sqlite3.IntegrityError:
+                        except IntegrityError:
                             st.error("Este producto y marca ya existen.")
             close_section()
 
@@ -501,7 +636,13 @@ def main() -> None:
 
                     if submit_add:
                         product_id = options[selected_label]
-                        increase_stock(conn, product_id, int(qty_to_add), normalize_text(add_notes))
+                        with engine.begin() as conn:
+                            increase_stock(
+                                conn,
+                                product_id,
+                                int(qty_to_add),
+                                normalize_text(add_notes),
+                            )
                         st.success("Existencias aumentadas correctamente.")
                         st.rerun()
             close_section()
@@ -529,9 +670,13 @@ def main() -> None:
 
                 if submit_withdraw:
                     product_id = options[selected_label]
-                    ok, message = withdraw_stock(
-                        conn, product_id, int(qty_to_withdraw), normalize_text(out_notes)
-                    )
+                    with engine.begin() as conn:
+                        ok, message = withdraw_stock(
+                            conn,
+                            product_id,
+                            int(qty_to_withdraw),
+                            normalize_text(out_notes),
+                        )
                     if ok:
                         st.success(message)
                         st.rerun()
@@ -557,9 +702,6 @@ def main() -> None:
             log_df["Tipo"] = log_df["Tipo"].map({"IN": "Entrada", "OUT": "Salida"}).fillna(log_df["Tipo"])
             st.dataframe(log_df, use_container_width=True, hide_index=True)
         close_section()
-
-    conn.close()
-
 
 if __name__ == "__main__":
     main()
