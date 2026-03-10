@@ -335,6 +335,34 @@ def inject_styles() -> None:
             border-color: rgba(22, 37, 47, 0.24) !important;
         }
 
+        div[data-baseweb="select"] * {
+            color: var(--text) !important;
+        }
+
+        div[data-baseweb="select"] > div {
+            background: rgba(255, 255, 255, 0.95) !important;
+        }
+
+        div[data-baseweb="popover"] {
+            background: rgba(255, 255, 255, 0.98) !important;
+            border: 1px solid rgba(22, 37, 47, 0.16) !important;
+            border-radius: 12px !important;
+            box-shadow: 0 18px 40px rgba(22, 37, 47, 0.12) !important;
+        }
+
+        div[data-baseweb="popover"] ul,
+        div[data-baseweb="popover"] li,
+        div[data-baseweb="popover"] [role="option"] {
+            background: rgba(255, 255, 255, 0.98) !important;
+            color: var(--text) !important;
+        }
+
+        div[data-baseweb="popover"] [aria-selected="true"],
+        div[data-baseweb="popover"] [role="option"]:hover {
+            background: rgba(15, 118, 110, 0.12) !important;
+            color: var(--text) !important;
+        }
+
         .stTextInput input::placeholder, .stTextArea textarea::placeholder {
             color: #6a7f8b !important;
             opacity: 1 !important;
@@ -705,3 +733,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
