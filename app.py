@@ -144,7 +144,7 @@ def init_db(conn: Connection) -> None:
 
 
 def normalize_text(value: str) -> str:
-    return " ".join(value.strip().split())
+    return " ".join(value.lower().strip().split())
 
 
 def add_new_product(
@@ -242,7 +242,7 @@ def update_product(
         return False, "El producto seleccionado no existe."
 
     previous_quantity = int(current_row["quantity"])
-    now = datetime.utcnow().isoformat(timespec="seconds")
+    now = datetime.now().isoformat(timespec="seconds")
 
     conn.execute(
         text(
@@ -757,6 +757,13 @@ def filter_products(
     return filtered_df
 
 
+def reset_panel_filters() -> None:
+    st.session_state.panel_search_text = ""
+    st.session_state.panel_selected_brands = []
+    st.session_state.panel_selected_categories = []
+    st.session_state.panel_selected_statuses = []
+
+
 def section_heading(title: str, caption: str) -> None:
     st.markdown(
         f"""
@@ -859,12 +866,11 @@ def main() -> None:
         with filter_col_5:
             st.write("")
             st.write("")
-            if st.button("Resetear Filtros", use_container_width=True):
-                st.session_state.panel_search_text = ""
-                st.session_state.panel_selected_brands = []
-                st.session_state.panel_selected_categories = []
-                st.session_state.panel_selected_statuses = []
-                st.rerun()
+            st.button(
+                "Resetear Filtros",
+                use_container_width=True,
+                on_click=reset_panel_filters,
+            )
         close_section()
 
         filtered_products_df = filter_products(
